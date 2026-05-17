@@ -1,4 +1,4 @@
-# pdf_md
+# pdf-md
 
 Fast, parallel PDF to full-text conversion built on the CPU-only [`pymupdf4llm`](https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/) engine.
 
