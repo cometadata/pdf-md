@@ -1,0 +1,28 @@
+[project]
+name = "pdf-md"
+version = "0.1.0"
+description = "Fast, parallel PDF to full-text conversion built on pymupdf4llm."
+requires-python = ">=3.11"
+dependencies = [
+    "pymupdf4llm",
+    "pyarrow>=12.0.0",
+    "huggingface-hub",
+    "datasets>=4.0.0",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+pdf-md = "pdf_md.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pdf_md", "pdf_md.hf_jobs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
