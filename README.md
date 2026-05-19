@@ -20,6 +20,9 @@ python -m pdf_md ./pdfs/ --format text --workers 16 --output ./output/
 
 # HuggingFace dataset input, push results to a (private) HF dataset repo
 python -m pdf_md hf://org/dataset --output org/output-dataset --private
+
+# Directory of PDFs to local parquet shards (same layout as HF mode)
+python -m pdf_md ./pdfs/ --output ./output/ --parquet
 ```
 
 ### Python API
@@ -84,6 +87,7 @@ def convert(
 | `--format` | Output format: `markdown` (default), `text`, `json`, `chunks` |
 | `--output`, `-o` | Local output directory or HF repo id (default: stdout) |
 | `--private` | Create a private HF dataset (with an HF-repo `--output`) |
+| `--parquet` | Write parquet shards to `<output>/data/shard_NNNNN.parquet` instead of per-doc files (local `--output` only) |
 | `--workers` | Worker process count (default: `os.cpu_count()`) |
 | `--layout-feature-set` | Layout model feature set: `rf` (default, text-only) or `imf+rf` (adds the per-page image CNN) |
 | `--max-docs` | Limit total documents processed |
@@ -114,6 +118,8 @@ Results are emitted as flat rows. HF parquet shards carry these columns:
 - A document that fails entirely emits a single row with `page_index=-1`, empty `content`, and `error` set.
 
 Local output (`--output ./dir/`) writes one file per document, named `<doc_id>.<ext>` — `.md` (markdown), `.txt` (text), `.json` (json), `.jsonl` (chunks). Pages are concatenated with `<!-- page N -->` separators for markdown/text and JSON-lines for json/chunks. Per-batch checkpoints are written under `.checkpoints/` and cleared on successful completion.
+
+With `--parquet`, local output uses the same `data/shard_NNNNN.parquet` layout and row schema as HF mode — the shards themselves are the resume checkpoint, so no `.checkpoints/` directory is created.
 
 ## HuggingFace Jobs
 

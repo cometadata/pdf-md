@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import shutil
 import threading
@@ -107,6 +108,51 @@ def _retry_with_backoff(fn, max_attempts=3, base_delay=2.0):
             time.sleep(base_delay * (2 ** (attempt - 1)))
 
 
+def build_shard_table(batch: List[Row], fmt: str):
+    """Build the canonical parquet table for one shard.
+
+    Single source of truth for the shard row schema
+    (doc_id, source, page_index, content, error, format) shared by the local
+    and HF writers.
+    """
+    import pyarrow as pa
+
+    rows = [
+        {
+            "doc_id": doc_id, "source": source,
+            "page_index": pr.page_index, "content": pr.content,
+            "error": error, "format": fmt,
+        }
+        for doc_id, source, pr, error in batch
+    ]
+    return pa.Table.from_pylist(rows)
+
+
+def write_local_shard(
+    batch: List[Row],
+    output_dir: Path,
+    shard_index: int,
+    *,
+    fmt: str = "markdown",
+) -> Path:
+    """Write one parquet shard to ``<output_dir>/data/shard_NNNNN.parquet``.
+
+    Atomic: writes to ``<name>.parquet.tmp`` then ``os.replace``. Returns the
+    final shard path.
+    """
+    import pyarrow.parquet as pq
+
+    table = build_shard_table(batch, fmt)
+    data_dir = Path(output_dir) / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    final = data_dir / f"shard_{shard_index:05d}.parquet"
+    tmp = final.with_suffix(final.suffix + ".tmp")
+    pq.write_table(table, tmp)
+    os.replace(tmp, final)
+    LOGGER.info("Wrote %s (%d rows)", final, table.num_rows)
+    return final
+
+
 def push_batch_to_hub(
     batch: List[Row],
     repo_id: str,
@@ -117,18 +163,9 @@ def push_batch_to_hub(
     private: bool = False,
 ) -> None:
     import tempfile
-    import pyarrow as pa
     import pyarrow.parquet as pq
 
-    rows = [
-        {
-            "doc_id": doc_id, "source": source,
-            "page_index": pr.page_index, "content": pr.content,
-            "error": error, "format": fmt,
-        }
-        for doc_id, source, pr, error in batch
-    ]
-    table = pa.Table.from_pylist(rows)
+    table = build_shard_table(batch, fmt)
     shard_name = f"data/shard_{shard_index:05d}.parquet"
 
     api = HfApi(token=token)
@@ -144,7 +181,7 @@ def push_batch_to_hub(
                 commit_message=f"Add shard {shard_index:05d}",
             )
         _retry_with_backoff(_upload)
-    LOGGER.info("Pushed %s (%d rows) to %s", shard_name, len(rows), repo_id)
+    LOGGER.info("Pushed %s (%d rows) to %s", shard_name, table.num_rows, repo_id)
 
 
 class AsyncShardUploader:
@@ -207,6 +244,44 @@ class AsyncShardUploader:
 import re
 
 _SHARD_RE = re.compile(r"^data/shard_(\d+)\.parquet$")
+_LOCAL_SHARD_RE = re.compile(r"^shard_(\d+)\.parquet$")
+
+
+def load_local_parquet_progress(output_dir: Path) -> Tuple[int, set]:
+    """Local mirror of :func:`load_hub_progress`.
+
+    Scans ``<output_dir>/data/shard_*.parquet`` and returns
+    ``(next_shard_index, completed_docs)``. Missing directories yield
+    ``(0, set())`` so callers can use it unconditionally on first runs.
+    """
+    import pyarrow.parquet as pq
+
+    data_dir = Path(output_dir) / "data"
+    if not data_dir.is_dir():
+        return 0, set()
+
+    shard_paths: List[Tuple[int, Path]] = []
+    for path in data_dir.iterdir():
+        m = _LOCAL_SHARD_RE.match(path.name)
+        if m:
+            shard_paths.append((int(m.group(1)), path))
+    if not shard_paths:
+        return 0, set()
+
+    max_index = max(idx for idx, _ in shard_paths)
+    completed: set = set()
+    for _, path in shard_paths:
+        try:
+            table = pq.read_table(path, columns=["doc_id"])
+            completed.update(table.column("doc_id").to_pylist())
+        except Exception:
+            LOGGER.warning("Failed to read shard %s; skipping", path)
+
+    LOGGER.info(
+        "Resume (local): %d shards, %d completed docs, next shard=%d",
+        len(shard_paths), len(completed), max_index + 1,
+    )
+    return max_index + 1, completed
 
 
 def load_hub_progress(

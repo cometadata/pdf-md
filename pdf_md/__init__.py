@@ -51,12 +51,14 @@ def convert(
     split: str = "train",
     token: Optional[str] = None,
     no_resume: bool = False,
+    parquet: bool = False,
 ) -> List[ConversionResult]:
     from .convert import convert_docs_streaming, _group_by_document
     from .storage import (
         save_batch_incremental, save_batch_checkpoint, load_checkpoints,
         clear_checkpoints, completed_docs_from_checkpoints,
         AsyncShardUploader, load_hub_progress,
+        write_local_shard, load_local_parquet_progress,
     )
 
     config = ExtractConfig().with_overrides(
@@ -67,13 +69,18 @@ def convert(
     hf_token = token or os.environ.get("HF_TOKEN")
 
     is_local_output = output is not None and _is_local_output(output)
-    checkpoint_dir = Path(output) if (output and is_local_output) else None
+    is_local_parquet = is_local_output and parquet
+    checkpoint_dir = (
+        Path(output) if (output and is_local_output and not parquet) else None
+    )
 
     completed_docs: set = set()
     shard_index = 0
     previous_rows: List = []
     if output and not no_resume:
-        if is_local_output:
+        if is_local_parquet:
+            shard_index, completed_docs = load_local_parquet_progress(Path(output))
+        elif is_local_output:
             previous_rows = load_checkpoints(checkpoint_dir)
             completed_docs = {r[0] for r in previous_rows}
         else:
@@ -88,6 +95,7 @@ def convert(
     all_rows: List = list(previous_rows)
     batch_count = 0
     pending_hub_rows: List = []
+    pending_local_rows: List = []
 
     uploader = None
     if output and not is_local_output:
@@ -101,7 +109,16 @@ def convert(
             all_rows.extend(batch)
             batch_count += 1
 
-            if output and is_local_output:
+            if is_local_parquet:
+                pending_local_rows.extend(batch)
+                if batch_count % config.flush_every == 0 and pending_local_rows:
+                    write_local_shard(
+                        pending_local_rows, Path(output), shard_index,
+                        fmt=config.format,
+                    )
+                    shard_index += 1
+                    pending_local_rows = []
+            elif output and is_local_output:
                 save_batch_incremental(batch, checkpoint_dir, fmt=config.format)
                 save_batch_checkpoint(batch, checkpoint_dir, batch_count - 1)
             elif uploader is not None:
@@ -111,6 +128,11 @@ def convert(
                     shard_index += 1
                     pending_hub_rows = []
     finally:
+        if pending_local_rows:
+            write_local_shard(
+                pending_local_rows, Path(output), shard_index,
+                fmt=config.format,
+            )
         if uploader is not None:
             if pending_hub_rows:
                 uploader.submit(pending_hub_rows, shard_index)

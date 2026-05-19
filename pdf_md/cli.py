@@ -19,6 +19,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Local output directory or HF repo id")
     p.add_argument("--private", action="store_true",
                    help="Create a private HF dataset (with HF-repo --output)")
+    p.add_argument("--parquet", action="store_true",
+                   help="Write parquet shards to <output>/data/shard_NNNNN.parquet "
+                        "(same schema as HF mode) instead of per-doc files")
     p.add_argument("--workers", type=int, default=None,
                    help="Worker process count (default: os.cpu_count())")
     p.add_argument("--layout-feature-set", default="rf",
@@ -60,6 +63,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         format=args.format,
         output=args.output,
         private=args.private,
+        parquet=args.parquet,
         workers=args.workers,
         layout_feature_set=args.layout_feature_set,
         max_docs=args.max_docs,

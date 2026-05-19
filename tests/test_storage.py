@@ -7,6 +7,7 @@ from pdf_md.types import PageResult
 from pdf_md.storage import (
     save_batch_incremental, save_batch_checkpoint,
     load_checkpoints, clear_checkpoints,
+    write_local_shard, load_local_parquet_progress,
 )
 
 
@@ -133,6 +134,35 @@ def test_async_uploader_reraises_first_error_on_close(monkeypatch):
     up.submit([_row("d1", 0, "a")], 0)
     with pytest.raises(RuntimeError, match="hub down"):
         up.close()
+
+
+def test_write_and_load_local_parquet_shards_roundtrip(tmp_path):
+    import pyarrow.parquet as pq
+
+    batch0 = [_row("d1", 0, "hello"), _row("d2", 0, "world")]
+    batch1 = [_row("d3", 0, "again"), _row("d4", -1, "", error="boom")]
+
+    path0 = write_local_shard(batch0, tmp_path, 0, fmt="markdown")
+    path1 = write_local_shard(batch1, tmp_path, 1, fmt="markdown")
+
+    assert path0 == tmp_path / "data" / "shard_00000.parquet"
+    assert path1 == tmp_path / "data" / "shard_00001.parquet"
+    # No tmp leftovers from the atomic write.
+    assert not list((tmp_path / "data").glob("*.tmp"))
+
+    table0 = pq.read_table(path0)
+    assert set(table0.column_names) == {
+        "doc_id", "source", "page_index", "content", "error", "format",
+    }
+    assert table0.column("doc_id").to_pylist() == ["d1", "d2"]
+
+    next_index, completed = load_local_parquet_progress(tmp_path)
+    assert next_index == 2
+    assert completed == {"d1", "d2", "d3", "d4"}
+
+
+def test_load_local_parquet_progress_missing_dir(tmp_path):
+    assert load_local_parquet_progress(tmp_path) == (0, set())
 
 
 def test_async_uploader_close_without_start_is_noop():

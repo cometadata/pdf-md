@@ -164,6 +164,10 @@ class _WorkerPool:
                 self._log_inflight(now)
 
     def _log_inflight(self, now: float) -> None:
+        with self._lock:
+            returned, submitted = self._returned, self._submitted
+        LOGGER.info("progress: %d/%d docs returned", returned, submitted)
+
         worst_idx, worst_doc, worst_age = -1, None, 0.0
         for idx in list(self._procs):
             entry = self._current.get(idx)
@@ -175,10 +179,8 @@ class _WorkerPool:
         if worst_doc is None or worst_age < self._LOG_FLOOR:
             return
         LOGGER.info(
-            "watchdog: worker %d on doc=%s for %.0fs (kills at %ds); "
-            "pool=%d/%d returned",
+            "watchdog: worker %d on doc=%s for %.0fs (kills at %ds)",
             worst_idx, worst_doc, worst_age, self.config.doc_timeout,
-            self._returned, self._submitted,
         )
 
     def _scan_once(self) -> None:

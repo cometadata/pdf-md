@@ -28,6 +28,40 @@ def test_resume_skips_completed(sample_pdf_dir, tmp_path):
     assert sorted(r.doc_id for r in results) == ["doc_a", "doc_b"]
 
 
+def test_end_to_end_parquet_resume(sample_pdf_dir, tmp_path):
+    import pyarrow.parquet as pq
+
+    out = tmp_path / "out"
+    # First run is capped at one doc and uses flush_every=1 so the single
+    # batch is flushed to a shard before the run ends.
+    pdf_md.convert(
+        str(sample_pdf_dir), output=str(out), parquet=True, flush_every=1,
+        use_ocr=False, workers=2, max_docs=1,
+    )
+    data_dir = out / "data"
+    shards = sorted(data_dir.glob("shard_*.parquet"))
+    assert len(shards) == 1
+    assert not (out / ".checkpoints").exists()
+
+    # Second run completes the remaining doc and writes a fresh shard.
+    pdf_md.convert(
+        str(sample_pdf_dir), output=str(out), parquet=True, flush_every=1,
+        use_ocr=False, workers=2,
+    )
+    shards = sorted(data_dir.glob("shard_*.parquet"))
+    assert len(shards) == 2
+
+    # Markdown emits one row per page, so a doc_id legitimately repeats
+    # *within* a shard. The resume invariant is that no doc_id appears in
+    # more than one shard.
+    per_shard_doc_sets = [
+        set(pq.read_table(s, columns=["doc_id"]).column("doc_id").to_pylist())
+        for s in shards
+    ]
+    assert set().union(*per_shard_doc_sets) == {"doc_a", "doc_b"}
+    assert sum(len(s) for s in per_shard_doc_sets) == len(set().union(*per_shard_doc_sets))
+
+
 def test_corrupt_pdf_produces_error_row(tmp_path):
     bad = tmp_path / "bad.pdf"
     bad.write_bytes(b"%PDF-1.4 garbage")
